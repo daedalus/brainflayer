@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     bit = BH23(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
     bit = BH24(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
 
-    if (hfile && !hsearchf(hfile, &hash)) {
+    if (hfile && hsearchf(hfile, &hash) != 1) {
       //fprintf(ofile, "%s (false positive)\n", hex(hash.uc, sizeof(hash.uc), buf, sizeof(buf)));
       continue;
     }

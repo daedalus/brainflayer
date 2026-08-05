@@ -861,7 +861,7 @@ int main(int argc, char **argv) {
             bit = BH23(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
             bit = BH24(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
 
-            if (!fopt || hsearchf(ffile, &hash160)) {
+            if (!fopt || hsearchf(ffile, &hash160) == 1) {
               if (tty) { fprintf(ofile, "\033[0K"); }
               // reformat/populate the line if required
               if (Iopt) {

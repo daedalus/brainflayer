@@ -1,6 +1,6 @@
 HEADERS = bloom.h crack.h hash160.h warpwallet.h
 OBJ_MAIN = brainflayer.o hex2blf.o blfchk.o ecmtabgen.o hexln.o filehex.o
-OBJ_UTIL = hex.o bloom.o mmapf.o hsearchf.o ec_pubkey_fast.o ripemd160_256.o dldummy.o
+OBJ_UTIL = hex.o bloom.o mmapf.o hsearchf.o ec_pubkey_fast.o ripemd160_256.o 
 OBJ_ALGO = $(patsubst %.c,%.o,$(wildcard algo/*.c))
 OBJECTS = $(OBJ_MAIN) $(OBJ_UTIL) $(OBJ_ALGO)
 BINARIES = brainflayer hexln hex2blf blfchk ecmtabgen filehex

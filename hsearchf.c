@@ -58,12 +58,23 @@ int hsearchf(FILE *f, hash160_t *hash) {
   memset(low_h.uc, 0x00, HASHLEN);
   memset(high_h.uc, 0xff, HASHLEN);
 
-  // this tries to minimize reads, but does a few extra comparisons
-  while (low_e != high_e &&
-         memcmp(hash->uc, low_h.uc, HASHLEN) > 0 &&
-         memcmp(hash->uc, high_h.uc, HASHLEN) < 0) {
+  // interpolation search over [low_e, high_e]. low_h/high_h hold the
+  // records at those positions; they start as virtual 0x00..00 / 0xff..ff
+  // bounds so the very first/last record of the file is reachable (the
+  // old guard `hash strictly between low_h and high_h` made those, and
+  // any single-record file, unfindable). The midpoint is clamped into the
+  // current range, and the degenerate vlow == vhigh case (e.g. a run of
+  // records sharing the same top 4 bytes) falls back to a plain midpoint
+  // instead of dividing by zero.
+  while (low_e <= high_e) {
     vlow = ntohl(low_h.ul[0]); vhigh = ntohl(high_h.ul[0]);
-    mid_e = low_e + (vtarget - vlow) * (high_e - low_e) / (vhigh - vlow);
+    if (vhigh > vlow) {
+      mid_e = low_e + (vtarget - vlow) * (high_e - low_e) / (vhigh - vlow);
+    } else {
+      mid_e = low_e + (high_e - low_e) / 2;
+    }
+    if (mid_e < low_e) { mid_e = low_e; }
+    if (mid_e > high_e) { mid_e = high_e; }
     READ_AT(mid_e, mid_h);
     ret = DO_MEMCMP(mid_h);
 
@@ -78,12 +89,16 @@ int hsearchf(FILE *f, hash160_t *hash) {
       RESULT(1);
     } else if (ret < 0) {
       low_e = mid_e + 1;
-      READ_AT(low_e, low_h);
-      if (DO_MEMCMP(low_h) == 0) { RESULT(1); }
+      if (low_e <= high_e) {
+        READ_AT(low_e, low_h);
+        if (DO_MEMCMP(low_h) == 0) { RESULT(1); }
+      }
     } else { // ret > 0
       high_e = mid_e - 1;
-      READ_AT(high_e, high_h);
-      if (DO_MEMCMP(high_h) == 0) { RESULT(1); }
+      if (high_e >= low_e) {
+        READ_AT(high_e, high_h);
+        if (DO_MEMCMP(high_h) == 0) { RESULT(1); }
+      }
     }
   }
 
