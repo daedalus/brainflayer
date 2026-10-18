@@ -96,6 +96,12 @@ makes it 4-8x faster than one at a time (`-I -c uc` about 1.4x faster overall).
 `BRAINFLAYER_RIPEMD_LANES=N` caps the width, and 1 turns the vector code off.
 `tests/ripemd160_test.sh` checks every width against the scalar code.
 
+The SHA-256 of the public keys before it is vectorized the same way, 16, 8 or
+4 keys at a time. On CPUs with SHA-NI, which OpenSSL uses for one key at a
+time, SSE2 is slower than that and is skipped unless asked for.
+`BRAINFLAYER_SHA256_LANES=N` caps the width, and 1 turns the vector code off.
+`tests/sha256_test.sh` checks every width against the scalar code.
+
 Run Brainflayer against it:
 
 `brainflayer -v -b example.blf -i phraselist.txt`
