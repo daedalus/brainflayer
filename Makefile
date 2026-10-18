@@ -1,6 +1,6 @@
-HEADERS = bloom.h crack.h hash160.h warpwallet.h prng.h
+HEADERS = bloom.h crack.h hash160.h warpwallet.h prng.h kangaroo.h
 OBJ_MAIN = brainflayer.o hex2blf.o blfchk.o ecmtabgen.o hexln.o filehex.o
-OBJ_UTIL = hex.o bloom.o mmapf.o hsearchf.o ec_pubkey_fast.o ripemd160_256.o sha256_pub.o prng.o
+OBJ_UTIL = hex.o bloom.o mmapf.o hsearchf.o ec_pubkey_fast.o ripemd160_256.o sha256_pub.o prng.o kangaroo.o
 OBJ_ALGO = $(patsubst %.c,%.o,$(wildcard algo/*.c))
 OBJECTS = $(OBJ_MAIN) $(OBJ_UTIL) $(OBJ_ALGO)
 BINARIES = brainflayer hexln hex2blf blfchk ecmtabgen filehex
@@ -36,7 +36,9 @@ scrypt-jane/scrypt-jane.h: .git
 scrypt-jane/scrypt-jane.o: scrypt-jane/scrypt-jane.h scrypt-jane/scrypt-jane.c
 	cd scrypt-jane; gcc -O3 -DSCRYPT_SALSA -DSCRYPT_SHA256 -c scrypt-jane.c -o scrypt-jane.o
 
-brainflayer.o: brainflayer.c secp256k1/include/secp256k1.h
+brainflayer.o: brainflayer.c secp256k1/include/secp256k1.h kangaroo.h
+
+kangaroo.o: kangaroo.c kangaroo.h ec_pubkey_fast.h
 
 algo/warpwallet.o: algo/warpwallet.c scrypt-jane/scrypt-jane.h
 

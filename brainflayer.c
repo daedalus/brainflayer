@@ -34,6 +34,7 @@
 #include "algo/sha3.h"
 
 #include "prng.h"
+#include "kangaroo.h"
 
 // raise this if you really want, but quickly diminishing returns
 #define BATCH_MAX 4096*14
@@ -350,6 +351,44 @@ inline static void fprintresult(FILE *f, hash160_t *hash,
           input);
 }
 
+/* parse a hex string (optionally 0x-prefixed, up to 64 digits) into a 32 byte
+ * big-endian scalar, left padded with zeros. returns 0 on success */
+static int parse_hex_scalar(const char *s, unsigned char out[32]) {
+  size_t len, i;
+  if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { s += 2; }
+  len = strlen(s);
+  if (len == 0 || len > 64) { return 1; }
+  for (i = 0; i < len; ++i) {
+    char c = s[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+      return 1;
+    }
+  }
+  memset(out, 0, 32);
+  /* walk from the least significant hex digit back, packing two per byte */
+  for (i = 0; i < len; ++i) {
+    char c = s[len - 1 - i];
+    int nyb = (c <= '9') ? (c - '0') : ((c | 0x20) - 'a' + 10);
+    int bytepos = 31 - (int)(i / 2);
+    if ((i & 1) == 0) { out[bytepos] = (unsigned char)nyb; }
+    else { out[bytepos] |= (unsigned char)(nyb << 4); }
+  }
+  return 0;
+}
+
+/* set out to 2^bit - 1 (bit in 1..256) */
+static void scalar_lowmask(unsigned char out[32], unsigned bit) {
+  unsigned i;
+  memset(out, 0, 32);
+  for (i = 0; i < bit && i < 256; ++i) { out[31 - i / 8] |= (unsigned char)(1 << (i & 7)); }
+}
+
+/* set out to 2^bit (bit in 0..255) */
+static void scalar_setbit(unsigned char out[32], unsigned bit) {
+  memset(out, 0, 32);
+  if (bit < 256) { out[31 - bit / 8] |= (unsigned char)(1 << (bit & 7)); }
+}
+
 void usage(unsigned char *name) {
   printf("Usage: %s [OPTION]...\n\n\
  -a                          open output file in append mode\n\
@@ -398,7 +437,17 @@ void usage(unsigned char *name) {
  -S SEED                     seed for -P (decimal or 0x hex, default: 0)\n\
  -F HEXPRIVKEY               first element of the -P sequence, checked before\n\
                              the keys the generator produces\n\
- -L COUNT                    stop after COUNT keys in -P mode (default: no limit)\n\
+ -L COUNT                    stop after COUNT keys in -P mode, or COUNT steps\n\
+                             in -K mode (default: no limit)\n\
+ -K PUBKEY                   Pollard kangaroo mode: solve for the private key\n\
+                             of hex PUBKEY (compressed 66 or uncompressed 130\n\
+                             hex digits) known to lie in the -R range\n\
+ -R RANGE                    search interval for -K, either START:END (hex\n\
+                             scalars) or a single decimal BITS meaning the\n\
+                             interval [2^(BITS-1), 2^BITS - 1]\n\
+ -D DPBITS                   distinguished point bits for -K (default: auto)\n\
+ -J NJUMPS                   size of the -K jump table (default: 32)\n\
+ -G HERD                     kangaroos per herd for -K (default: auto)\n\
  -k K                        skip the first K lines of input\n\
  -n K/N                      use only the Kth of every N input lines\n\
  -B                          batch size for affine transformations\n\
@@ -443,6 +492,8 @@ int main(int argc, char **argv) {
   unsigned char *mopt = NULL, *fopt = NULL, *ropt = NULL;
   unsigned char *Iopt = NULL, *copt = NULL;
   unsigned char *Popt = NULL, *Fopt = NULL;
+  unsigned char *Kopt = NULL, *Ropt = NULL;
+  int Dopt = 0, Jopt = 0, Gopt = 0;
   uint64_t Sopt = 0, Lopt = 0, prng_count = 0;
   prng_t prng;
   unsigned char prng_first[32];
@@ -459,7 +510,7 @@ int main(int argc, char **argv) {
   unsigned char batch_priv[BATCH_MAX][32];
   unsigned char batch_upub[BATCH_MAX][65];
 
-  while ((c = getopt(argc, argv, "avxb:hi:k:f:m:n:o:p:s:r:c:t:w:CI:B:N:P:S:F:L:")) != -1) {
+  while ((c = getopt(argc, argv, "avxb:hi:k:f:m:n:o:p:s:r:c:t:w:CI:B:N:P:S:F:L:K:R:D:J:G:")) != -1) {
     switch (c) {
       case 'a':
         aopt = 1; // open output file in append mode
@@ -544,7 +595,22 @@ int main(int argc, char **argv) {
         Fopt = optarg; // first element of the prng sequence
         break;
       case 'L':
-        Lopt = strtoull(optarg, NULL, 10); // number of prng keys
+        Lopt = strtoull(optarg, NULL, 10); // number of prng keys / kangaroo steps
+        break;
+      case 'K':
+        Kopt = optarg; // kangaroo target pubkey
+        break;
+      case 'R':
+        Ropt = optarg; // kangaroo search range
+        break;
+      case 'D':
+        Dopt = atoi(optarg); // kangaroo distinguished point bits
+        break;
+      case 'J':
+        Jopt = atoi(optarg); // kangaroo jump table size
+        break;
+      case 'G':
+        Gopt = atoi(optarg); // kangaroo herd size
         break;
       case 'h':
         // show help
@@ -603,6 +669,86 @@ int main(int argc, char **argv) {
     } else if (Bopt & (Bopt - 1)) { // https://graphics.stanford.edu/~seander/bithacks.html#DetermineIfPowerOf2
       bail(1, "Invalid '-B' argument, batch size '%d' is not a power of 2\n", Bopt);
     }
+  }
+
+  if (Kopt) { /* Pollard kangaroo mode */
+    kangaroo_opts_t kopts;
+    unsigned char kpub[65];
+    size_t klen = strlen(Kopt);
+
+    if (Iopt || Popt || boptn || topt || sopt || popt || ropt || fopt) {
+      bail(1, "'-K' kangaroo mode cannot be combined with -I, -P, -b, -t, -s, -p, -r or -f\n");
+    }
+    if (!Ropt) {
+      bail(1, "'-K' kangaroo mode requires a search range (-R)\n");
+    }
+    if (klen == 66) {
+      if (Kopt[0] != '0' || (Kopt[1] != '2' && Kopt[1] != '3')) {
+        bail(1, "compressed pubkey for '-K' must start with 02 or 03\n");
+      }
+      kpub[0] = Kopt[1] == '3' ? 0x03 : 0x02;
+      unhex(Kopt + 2, 64, kpub + 1, 32);
+      kopts.pub_sz = 33;
+    } else if (klen == 130) {
+      if (Kopt[0] != '0' || Kopt[1] != '4') {
+        bail(1, "uncompressed pubkey for '-K' must start with 04\n");
+      }
+      kpub[0] = 0x04;
+      unhex(Kopt + 2, 128, kpub + 1, 64);
+      kopts.pub_sz = 65;
+    } else {
+      bail(1, "'-K' pubkey must be 66 (compressed) or 130 (uncompressed) hex digits\n");
+    }
+
+    /* parse the range: START:END hex, or a single decimal bit width */
+    {
+      char *colon = strchr(Ropt, ':');
+      if (colon) {
+        *colon = '\0';
+        if (parse_hex_scalar(Ropt, kopts.range_start) != 0) {
+          bail(1, "invalid range start in '-R'\n");
+        }
+        if (parse_hex_scalar(colon + 1, kopts.range_end) != 0) {
+          bail(1, "invalid range end in '-R'\n");
+        }
+        *colon = ':';
+      } else {
+        int bits = atoi(Ropt);
+        if (bits < 1 || bits > 256) {
+          bail(1, "invalid bit width in '-R' (must be 1..256)\n");
+        }
+        scalar_setbit(kopts.range_start, bits - 1);
+        scalar_lowmask(kopts.range_end, bits);
+      }
+    }
+
+    if (Dopt < 0 || Jopt < 0 || Gopt < 0) {
+      bail(1, "'-D', '-J' and '-G' must be non-negative\n");
+    }
+
+    if (oopt && (ofile = fopen(oopt, (aopt ? "a" : "w"))) == NULL) {
+      bail(1, "failed to open '%s' for writing: %s\n", oopt, strerror(errno));
+    }
+    setvbuf(ofile, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
+
+    brainflayer_init_globals();
+    if (secp256k1_ec_pubkey_precomp_table(wopt, mopt) != 0) {
+      bail(1, "failed to initialize precomputed table\n");
+    }
+
+    kopts.pub = kpub;
+    kopts.dp_bits = (unsigned)Dopt;
+    kopts.n_jumps = (unsigned)Jopt;
+    kopts.herd = (unsigned)Gopt;
+    kopts.max_steps = Lopt;
+    kopts.verbose = vopt;
+    kopts.ofile = ofile;
+
+    ret = kangaroo_solve(priv, &kopts);
+    if (ret < 0) { return 1; }
+    if (ret == 1 && vopt) { fprintf(stderr, "no solution found\n"); }
+    return ret == 0 ? 0 : 1;
   }
 
   if (Iopt) {
