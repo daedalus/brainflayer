@@ -27,7 +27,8 @@ int main(int argc, char **argv) {
   hash160_t hash;
   char *line = NULL;
   size_t line_sz = 0;
-  unsigned char *bloom, *bloomfile, *hashfile;
+  unsigned char *bloomfile, *hashfile;
+  bloom_t bloom;
   FILE *ifile = stdin, *ofile = stdout, *hfile = NULL;
   mmapf_ctx bloom_mmapf;
 
@@ -38,15 +39,13 @@ int main(int argc, char **argv) {
 
   bloomfile = argv[1];
 
-  if ((ret = mmapf(&bloom_mmapf, bloomfile, BLOOM_SIZE, MMAPF_RNDRD)) != MMAPF_OKAY) {
+  if ((ret = bloom_open(&bloom, &bloom_mmapf, bloomfile)) != MMAPF_OKAY) {
     fprintf(stderr, "failed to open bloom filter '%s': %s\n", bloomfile, mmapf_strerror(ret));
     return 1;
-  } else if (bloom_mmapf.mem == NULL) {
+  } else if (bloom.bits == NULL) {
     fprintf(stderr, "got NULL pointer trying to set up bloom filter\n");
     return 1;
   }
-
-  bloom = bloom_mmapf.mem;
 
   if (argc == 3) {
     hashfile = argv[2];
@@ -56,32 +55,7 @@ int main(int argc, char **argv) {
   while (getline(&line, &line_sz, ifile) > 0) {
     unhex(line, strlen(line), hash.uc, sizeof(hash.uc));
 
-    unsigned int bit;
-    bit = BH00(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH01(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH02(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH03(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH04(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH05(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH06(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH07(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH08(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH09(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH10(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH11(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH12(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH13(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH14(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH15(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH16(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH17(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH18(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH19(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH20(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH21(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH22(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH23(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-    bit = BH24(hash.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
+    if (!bloom_chk(&bloom, hash.ul)) { continue; }
 
     if (hfile && hsearchf(hfile, &hash) != 1) {
       //fprintf(ofile, "%s (false positive)\n", hex(hash.uc, sizeof(hash.uc), buf, sizeof(buf)));
