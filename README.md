@@ -64,6 +64,25 @@ Precompute the bloom filter:
 
 `hex2blf example.hex example.blf`
 
+By default this is the classic 1 GiB filter with 25 slices. Each hash160 is
+already uniformly random, so the filter does not rehash it: every bit position
+is a slice of the hash160. To hold more addresses at the same false positive
+rate, make the filter bigger with `-m` and use more slices with `-k`:
+
+`hex2blf -m 36 -k 40 example.hex example.blf`
+
+* `-m LOG2BITS` the filter has 2^LOG2BITS bits (20..40, e.g. 33 = 1 GiB,
+                36 = 8 GiB) and each slice is LOG2BITS bits of the hash160
+* `-k SLICES`   how many slices of the hash160 are set and checked (1..160),
+                taken at evenly spaced offsets of the 160 bits, wrapping
+                around. Without `-k` the best number for the count of hashes
+                is used, `round(2^LOG2BITS / n * ln 2)`
+
+These filters end with a 16 byte trailer that records the size and number of
+slices, so `brainflayer -b`, `blfchk` and adding more hashes with `hex2blf`
+pick them up without extra options. Legacy filters keep working unchanged.
+`tests/bloom_test.sh` checks the slicing against a Python reference.
+
 Run Brainflayer against it:
 
 `brainflayer -v -b example.blf -i phraselist.txt`

@@ -3,8 +3,12 @@
 #define __BRAINFLAYER_BLOOM_H_
 
 #include <stdint.h>
+#include <stddef.h>
+#include <string.h>
 
-/* 2^32 bits */
+#include "mmapf.h"
+
+/* legacy filter file: 1 GiB, indexed by 32-bit slices (BH00..BH24) */
 #define BLOOM_SIZE (512*1024*1024*2)
 
 #define BLOOM_SET_BIT(N) (bloom[(N)>>3] = bloom[(N)>>3] | (1<<((N)&7)))
@@ -33,12 +37,6 @@
 #define BH17(N) (N[2]<<24|N[3]>> 8)
 #define BH18(N) (N[3]<<24|N[4]>> 8)
 #define BH19(N) (N[4]<<24|N[0]>> 8)
-#define BH20(N) (N[0]<<16|N[1]>>24)
-#define BH21(N) (N[1]<<16|N[2]>>24)
-#define BH22(N) (N[2]<<16|N[3]>>24)
-#define BH23(N) (N[3]<<16|N[4]>>24)
-#define BH24(N) (N[4]<<16|N[0]>>24)
-
 #define BH20(N) (N[0]<<16|N[1]>>24)
 #define BH21(N) (N[1]<<16|N[2]>>24)
 #define BH22(N) (N[2]<<16|N[3]>>24)
@@ -77,6 +75,71 @@ static unsigned int bloom_chk_hash160(unsigned char *bloom, uint32_t *h) {
   return 1;
 }
 #pragma GCC diagnostic pop
+
+/* Sliced bloom filter with a configurable size.
+ *
+ * Like the legacy filter, no extra hashing is done: hash160 is already
+ * uniformly random, so each of the k bit positions is a slice of it. The
+ * 160 bits (the five words, most significant bit first, wrapping around)
+ * are cut into k windows of log2bits bits at evenly spaced offsets. A bigger
+ * filter means wider slices, and more capacity means more slices.
+ *
+ * File layout: 2^log2bits bits of filter followed by a 16 byte trailer,
+ * "BLFSLICE", version, log2bits, k, then five zero bytes. A 1 GiB file
+ * without a trailer is a legacy filter. */
+#define BLOOM_MAGIC "BLFSLICE"
+#define BLOOM_TRAILER_SZ 16
+#define BLOOM_VERSION 1
+#define BLOOM_LOG2_MIN 20
+#define BLOOM_LOG2_MAX 40
+#define BLOOM_SLICES_MAX 160
+
+typedef struct {
+  unsigned char *bits;
+  int legacy;
+  unsigned int log2bits, k;
+  uint64_t mask;
+  size_t bits_sz;      /* bytes of filter, without the trailer */
+  uint8_t word[BLOOM_SLICES_MAX];
+  int8_t shift[BLOOM_SLICES_MAX];
+  uint8_t lshift[BLOOM_SLICES_MAX];
+} bloom_t;
+
+/* set up legacy (log2bits == 0) or sliced parameters, returns 0 if valid */
+int bloom_init(bloom_t *, unsigned int log2bits, unsigned int k);
+/* bytes on disk, including the trailer */
+size_t bloom_file_size(const bloom_t *);
+void bloom_trailer(const bloom_t *, unsigned char *);
+/* detect the format of an existing file, returns 0 if it is a bloom filter */
+int bloom_probe(bloom_t *, const char *);
+/* probe and mmap a filter read-only, returns 0 or an mmapf error */
+int bloom_open(bloom_t *, mmapf_ctx *, const char *);
+void bloom_set(bloom_t *, const uint32_t *);
+double bloom_fp_rate(const bloom_t *, double n);
+unsigned int bloom_best_k(unsigned int log2bits, double n);
+
+static inline uint64_t bloom_slice(const bloom_t *b, const uint32_t *w, int i) {
+  int j = b->word[i];
+  uint64_t x = (uint64_t)w[j] << 32 | w[j+1];
+  if (b->shift[i] >= 0) { return (x >> b->shift[i]) & b->mask; }
+  return ((x << b->lshift[i]) | (w[j+2] >> (32 - b->lshift[i]))) & b->mask;
+}
+
+static inline unsigned int bloom_chk(const bloom_t *b, const uint32_t *h) {
+  uint32_t w[7];
+  unsigned int i;
+  uint64_t t;
+
+  if (b->legacy) { return bloom_chk_hash160(b->bits, (uint32_t *)h); }
+
+  memcpy(w, h, 20);
+  w[5] = h[0]; w[6] = h[1];
+  for (i = 0; i < b->k; ++i) {
+    t = bloom_slice(b, w, i);
+    if (((b->bits[t >> 3] >> (t & 7)) & 1) == 0) { return 0; }
+  }
+  return 1;
+}
 
 //#define bloom_new() malloc(536870912)
 //unsigned char * bloom_load(unsigned char *);

@@ -49,8 +49,8 @@ typedef struct pubhashfn_s {
 
 static unsigned char *mem;
 
-static mmapf_ctx bloom_mmapf[10];
-static unsigned char *bloom, *blooms[10];
+static mmapf_ctx bloom_mmapf[BOPT_MAX];
+static bloom_t blooms[BOPT_MAX];
 
 static unsigned char *unhexed = NULL;
 static size_t unhexed_sz = 4096;
@@ -491,7 +491,7 @@ int main(int argc, char **argv) {
         vopt = 1; // verbose
         break;
       case 'b':
-        if (boptn < BATCH_MAX) {
+        if (boptn < BOPT_MAX) {
           bopts[boptn] = optarg; // bloom filter file
           boptn++;
         }
@@ -771,12 +771,11 @@ int main(int argc, char **argv) {
       if (vopt) {
         fprintf(stdout, "%s... ", bopts[i]);
       }
-      if ((ret = mmapf(&bloom_mmapf[i], bopts[i], BLOOM_SIZE, MMAPF_RNDRD)) != MMAPF_OKAY) {
+      if ((ret = bloom_open(&blooms[i], &bloom_mmapf[i], bopts[i])) != MMAPF_OKAY) {
         bail(1, "failed to open bloom filter '%s': %s\n", bopts[i], mmapf_strerror(ret));
-      } else if (bloom_mmapf[i].mem == NULL) {
+      } else if (blooms[i].bits == NULL) {
         bail(1, "got NULL pointer trying to set up bloom filter\n");
       }
-      blooms[i] = bloom_mmapf[i].mem;
     }
     printf("\n");
   }
@@ -916,33 +915,7 @@ int main(int argc, char **argv) {
           pubhashfn[j].fn(&hash160, batch_upub[i]);
 
           for (int k = 0; k < boptn; k++) {
-            unsigned int bit;
-            bloom = blooms[k];
-            bit = BH00(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH01(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH02(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH03(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH04(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH05(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH06(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH07(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH08(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH09(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH10(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH11(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH12(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH13(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH14(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH15(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH16(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH17(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH18(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH19(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH20(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH21(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH22(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH23(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
-            bit = BH24(hash160.ul); if (BLOOM_GET_BIT(bit) == 0) { continue; }
+            if (!bloom_chk(&blooms[k], hash160.ul)) { continue; }
 
             if (!fopt || hsearchf(ffile, &hash160) == 1) {
               if (tty) { fprintf(ofile, "\033[0K"); }
