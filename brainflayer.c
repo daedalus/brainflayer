@@ -52,6 +52,11 @@ static unsigned char *mem;
 static mmapf_ctx bloom_mmapf[BOPT_MAX];
 static bloom_t blooms[BOPT_MAX];
 
+// Public keys are hashed and checked against the bloom filters this many at a time.
+#define CHK_CHUNK 256
+static hash160_t chk_hash[CHK_CHUNK*8];
+static unsigned char chk_hit[BOPT_MAX][CHK_CHUNK*8];
+
 static unsigned char *unhexed = NULL;
 static size_t unhexed_sz = 4096;
 
@@ -907,30 +912,44 @@ int main(int argc, char **argv) {
       batch_stopped = i;
     }
 
-    // loop over the public keys
-    for (i = 0; i < batch_stopped; ++i) {
-      if (boptn > 0) { /* crack mode */
-        // loop over pubkey hash functions
-        for (j = 0; pubhashfn[j].fn != NULL; ++j) {
-          pubhashfn[j].fn(&hash160, batch_upub[i]);
+    if (boptn > 0) { /* crack mode */
+      // loop over the public keys a chunk at a time
+      for (int c = 0; c < batch_stopped; c += CHK_CHUNK) {
+        int cend = batch_stopped - c < CHK_CHUNK ? batch_stopped : c + CHK_CHUNK;
+        int n = 0;
 
-          for (int k = 0; k < boptn; k++) {
-            if (!bloom_chk(&blooms[k], hash160.ul)) { continue; }
+        // hash the chunk with each pubkey hash function, then check the hashes
+        // against each bloom filter in one go
+        for (i = c; i < cend; ++i) {
+          for (j = 0; pubhashfn[j].fn != NULL; ++j) {
+            pubhashfn[j].fn(&chk_hash[n++], batch_upub[i]);
+          }
+        }
+        for (int k = 0; k < boptn; k++) {
+          bloom_chk_n(&blooms[k], chk_hash[0].ul, n, chk_hit[k]);
+        }
 
-            if (!fopt || hsearchf(ffile, &hash160) == 1) {
-              if (tty) { fprintf(ofile, "\033[0K"); }
-              // reformat/populate the line if required
-              if (Iopt || Popt) {
-                hex(batch_priv[i], 32, batch_line[i], 65);
+        for (n = 0, i = c; i < cend; ++i) {
+          for (j = 0; pubhashfn[j].fn != NULL; ++j, ++n) {
+            for (int k = 0; k < boptn; k++) {
+              if (!chk_hit[k][n]) { continue; }
+
+              if (!fopt || hsearchf(ffile, &chk_hash[n]) == 1) {
+                if (tty) { fprintf(ofile, "\033[0K"); }
+                // reformat/populate the line if required
+                if (Iopt || Popt) {
+                  hex(batch_priv[i], 32, batch_line[i], 65);
+                }
+                fprintresult(ofile, &chk_hash[n], pubhashfn[j].id, modestr, batch_line[i]);
+                ++olines;
+                break;
               }
-              fprintresult(ofile, &hash160, pubhashfn[j].id, modestr, batch_line[i]);
-              ++olines;
-              k = boptn; // End a for loop.
-              break;
             }
           }
         }
-      } else { /* generate mode */
+      }
+    } else { /* generate mode */
+      for (i = 0; i < batch_stopped; ++i) {
         // reformat/populate the line if required
         if (Iopt || Popt) {
           hex(batch_priv[i], 32, batch_line[i], 65);
