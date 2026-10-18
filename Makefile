@@ -22,7 +22,9 @@ secp256k1/.libs/libsecp256k1.a: .git
 	git submodule update
 	cd secp256k1; make distclean || true
 	cd secp256k1; ./autogen.sh
-	cd secp256k1; ./configure
+	cd secp256k1; ./configure --with-asm=x86_64 --with-field=64bit \
+	                          --with-scalar=64bit \
+	                          --disable-tests --disable-benchmark
 	cd secp256k1; make
 
 secp256k1/include/secp256k1.h: secp256k1/.libs/libsecp256k1.a
