@@ -206,6 +206,40 @@ and `-L COUNT` stops after COUNT keys (the default is to run forever). Run
 `tests/prng_test.sh` to check the generators against Python reference
 implementations.
 
+A Pollard kangaroo mode solves the elliptic curve discrete logarithm over an
+interval: given a public key whose private key is known to lie in some range,
+it recovers that private key. Unlike the other modes it does not read
+candidates from stdin - it is given the target and the range and searches on
+its own. Pass the target public key with `-K` (compressed, 66 hex digits, or
+uncompressed, 130) and the interval with `-R`:
+
+`brainflayer -v -K 0292a2457e760a248a7f3fa7edd2cfdab72b324d740e18bbb02645ad723fdaea7a -R 29`
+
+The range may be given either as `START:END` hex scalars, or as a single
+decimal bit width `BITS` meaning the interval `[2^(BITS-1), 2^BITS - 1]` (the
+convention used by the Bitcoin "puzzle" keys). On success the recovered private
+key is printed, in hex, to the output (honouring `-o`).
+
+Expected work is about `sqrt(range)` elliptic curve operations, so the interval
+has to be small enough to be tractable - a few tens of bits for a quick run on
+one core, not a full 256-bit key. The method is Las Vegas randomised; runtime
+varies from one attempt to the next. Tuning options (all optional, with
+defaults derived from the range width):
+
+* `-D DPBITS` distinguished point rarity - a point is stored when its x
+              coordinate has this many low bits clear. Rarer points use less
+              memory but add latency to detecting a collision.
+* `-J NJUMPS` number of entries in the pseudo-random jump table (default 32)
+* `-G HERD`   kangaroos per herd (both a tame and a wild herd of this size are
+              run). The search is single threaded, so a large herd does not
+              reduce the total work; a small one (the default is 8) is fastest
+              because it still lets the batched field inversion amortise.
+* `-L COUNT`  give up after COUNT steps instead of running until solved
+
+Run `tests/kangaroo_test.sh` to check that keys in known intervals are
+recovered (public keys are derived with an independent secp256k1 implementation
+in Python).
+
 See the output of `brainflayer -h` for more detailed usage info.
 
 Also included is `blfchk` - you can pipe it hex encoded hash160 to check a

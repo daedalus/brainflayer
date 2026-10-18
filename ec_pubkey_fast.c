@@ -541,4 +541,121 @@ int secp256k1_ec_pubkey_add_gej(unsigned char *pub_chr, int *pub_chr_sz, void *a
   return 0;
 }
 
+/* --- opaque elliptic curve helpers used by the Pollard kangaroo solver --- */
+
+size_t secp256k1_ec_gej_size(void) { return sizeof(secp256k1_gej); }
+size_t secp256k1_ec_ge_size(void)  { return sizeof(secp256k1_ge);  }
+
+int secp256k1_ec_pubkey_to_gej(void *gej, const unsigned char *pub, size_t pub_sz) {
+  secp256k1_ge ge;
+  if (!secp256k1_eckey_pubkey_parse(&ge, pub, pub_sz)) {
+    return 1;
+  }
+  secp256k1_gej_set_ge((secp256k1_gej *)gej, &ge);
+  return 0;
+}
+
+void secp256k1_ec_scalar_mul_g_gej(void *gej, const unsigned char scalar[32]) {
+#ifdef USE_BL_ARITHMETIC
+  secp256k1_ecmult_gen_bl((secp256k1_gej *)gej, scalar);
+#else
+  secp256k1_ecmult_gen2((secp256k1_gej *)gej, scalar);
+#endif
+}
+
+void secp256k1_ec_scalar_mul_g_ge(void *ge, const unsigned char scalar[32]) {
+  secp256k1_gej pj;
+  secp256k1_ec_scalar_mul_g_gej(&pj, scalar);
+  secp256k1_ge_set_gej((secp256k1_ge *)ge, &pj);
+}
+
+void secp256k1_ec_gej_add_ge(void *r_gej, const void *a_gej, const void *b_ge) {
+#ifdef USE_BL_ARITHMETIC
+  secp256k1_gej_add_ge_bl((secp256k1_gej *)r_gej, (const secp256k1_gej *)a_gej, (const secp256k1_ge *)b_ge, NULL);
+#else
+  secp256k1_gej_add_ge_var((secp256k1_gej *)r_gej, (const secp256k1_gej *)a_gej, (const secp256k1_ge *)b_ge, NULL);
+#endif
+}
+
+void secp256k1_ec_gej_get_x(unsigned char x[32], const void *gej) {
+  secp256k1_ge p;
+  secp256k1_gej tmp = *(const secp256k1_gej *)gej;
+  secp256k1_ge_set_gej(&p, &tmp);
+  secp256k1_fe_normalize_var(&p.x);
+  secp256k1_fe_get_b32(x, &p.x);
+}
+
+/* scratch for the batched inversion in the step/batch routines below */
+static secp256k1_fe *kangaroo_az = NULL;
+static secp256k1_fe *kangaroo_ai = NULL;
+static size_t kangaroo_scratch_n = 0;
+
+static void kangaroo_scratch_reserve(size_t n) {
+  if (n > kangaroo_scratch_n) {
+    kangaroo_az = realloc(kangaroo_az, sizeof(secp256k1_fe) * n);
+    kangaroo_ai = realloc(kangaroo_ai, sizeof(secp256k1_fe) * n);
+    if (kangaroo_az == NULL || kangaroo_ai == NULL) {
+      fprintf(stderr, "failed to allocate kangaroo inversion scratch\n");
+      exit(1);
+    }
+    kangaroo_scratch_n = n;
+  }
+}
+
+void secp256k1_ec_gej_get_x_batch(unsigned char (*x)[32], const void *gej_array, size_t n) {
+  const secp256k1_gej *p = (const secp256k1_gej *)gej_array;
+  secp256k1_ge a;
+  size_t i;
+  if (n == 0) { return; }
+  kangaroo_scratch_reserve(n);
+  for (i = 0; i < n; ++i) { kangaroo_az[i] = p[i].z; }
+  secp256k1_fe_inv_all_var(kangaroo_ai, kangaroo_az, n);
+  for (i = 0; i < n; ++i) {
+    secp256k1_ge_set_gej_zinv(&a, &p[i], &kangaroo_ai[i]);
+    secp256k1_fe_normalize_var(&a.x);
+    secp256k1_fe_get_b32(x[i], &a.x);
+  }
+}
+
+void secp256k1_ec_kangaroo_batch_step(void *gej_array, const void *jumps_ge_array,
+                                      const unsigned int *idx, unsigned char (*x_out)[32],
+                                      size_t n) {
+  secp256k1_gej *p = (secp256k1_gej *)gej_array;
+  const secp256k1_ge *jumps = (const secp256k1_ge *)jumps_ge_array;
+  secp256k1_ge a;
+  size_t i;
+  if (n == 0) { return; }
+  kangaroo_scratch_reserve(n);
+  for (i = 0; i < n; ++i) {
+#ifdef USE_BL_ARITHMETIC
+    secp256k1_gej_add_ge_bl(&p[i], &p[i], &jumps[idx[i]], NULL);
+#else
+    secp256k1_gej_add_ge_var(&p[i], &p[i], &jumps[idx[i]], NULL);
+#endif
+    kangaroo_az[i] = p[i].z;
+  }
+  secp256k1_fe_inv_all_var(kangaroo_ai, kangaroo_az, n);
+  for (i = 0; i < n; ++i) {
+    secp256k1_ge_set_gej_zinv(&a, &p[i], &kangaroo_ai[i]);
+    secp256k1_fe_normalize_var(&a.x);
+    secp256k1_fe_get_b32(x_out[i], &a.x);
+  }
+}
+
+void secp256k1_ec_scalar_neg_b32(unsigned char out[32], const unsigned char a[32]) {
+  secp256k1_scalar s;
+  secp256k1_scalar_set_b32(&s, a, NULL);
+  secp256k1_scalar_negate(&s, &s);
+  secp256k1_scalar_get_b32(out, &s);
+}
+
+void secp256k1_ec_scalar_sub_b32(unsigned char out[32], const unsigned char a[32], const unsigned char b[32]) {
+  secp256k1_scalar sa, sb;
+  secp256k1_scalar_set_b32(&sa, a, NULL);
+  secp256k1_scalar_set_b32(&sb, b, NULL);
+  secp256k1_scalar_negate(&sb, &sb);
+  secp256k1_scalar_add(&sa, &sa, &sb);
+  secp256k1_scalar_get_b32(out, &sa);
+}
+
 /*  vim: set ts=2 sw=2 et ai si: */
