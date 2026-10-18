@@ -22,10 +22,9 @@ secp256k1/.libs/libsecp256k1.a: .git
 	git submodule update
 	cd secp256k1; make distclean || true
 	cd secp256k1; ./autogen.sh
-	# Pin the fast backends explicitly: configure's "auto" silently falls back
-	# to 32-bit C field code or the builtin inverse if asm/gmp aren't detected.
 	cd secp256k1; ./configure --with-asm=x86_64 --with-field=64bit \
-	  --with-scalar=64bit --with-bignum=gmp
+	                          --with-scalar=64bit --with-bignum=gmp \
+	                          --disable-tests --disable-benchmark
 	cd secp256k1; make
 
 secp256k1/include/secp256k1.h: secp256k1/.libs/libsecp256k1.a
