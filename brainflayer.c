@@ -32,6 +32,8 @@
 #include "algo/brainwalletio.h"
 #include "algo/sha3.h"
 
+#include "prng.h"
+
 // raise this if you really want, but quickly diminishing returns
 #define BATCH_MAX 4096*14
 
@@ -384,6 +386,18 @@ void usage(unsigned char *name) {
  -r FRAGMENT                 use FRAGMENT for cracking rushwallet passphrase\n\
  -I HEXPRIVKEY               incremental private key cracking mode, starting\n\
                              at HEXPRIVKEY (supports -n) FAST\n\
+ -P TYPE                     PRNG private key generator mode, each key is the\n\
+                             next 256 bits of TYPE's output (supports -k, -n)\n\
+                             mt19937      - MT19937 init_genrand (C, C++, numpy)\n\
+                             pymt         - MT19937 init_by_array (Python random)\n\
+                             lcg64        - 64-bit LCG (Knuth MMIX)\n\
+                             xorshift64   - Marsaglia xorshift64 (13,7,17)\n\
+                             xorshift128p - xorshift128+ seeded by splitmix64\n\
+                             splitmix64   - splitmix64\n\
+ -S SEED                     seed for -P (decimal or 0x hex, default: 0)\n\
+ -F HEXPRIVKEY               first element of the -P sequence, checked before\n\
+                             the keys the generator produces\n\
+ -L COUNT                    stop after COUNT keys in -P mode (default: no limit)\n\
  -k K                        skip the first K lines of input\n\
  -n K/N                      use only the Kth of every N input lines\n\
  -B                          batch size for affine transformations\n\
@@ -427,6 +441,10 @@ int main(int argc, char **argv) {
   unsigned char *topt = NULL, *sopt = NULL, *popt = NULL;
   unsigned char *mopt = NULL, *fopt = NULL, *ropt = NULL;
   unsigned char *Iopt = NULL, *copt = NULL;
+  unsigned char *Popt = NULL, *Fopt = NULL;
+  uint64_t Sopt = 0, Lopt = 0, prng_count = 0;
+  prng_t prng;
+  unsigned char prng_first[32];
 
   unsigned char priv[64];
   hash160_t hash160;
@@ -440,7 +458,7 @@ int main(int argc, char **argv) {
   unsigned char batch_priv[BATCH_MAX][32];
   unsigned char batch_upub[BATCH_MAX][65];
 
-  while ((c = getopt(argc, argv, "avxb:hi:k:f:m:n:o:p:s:r:c:t:w:CI:B:N:")) != -1) {
+  while ((c = getopt(argc, argv, "avxb:hi:k:f:m:n:o:p:s:r:c:t:w:CI:B:N:P:S:F:L:")) != -1) {
     switch (c) {
       case 'a':
         aopt = 1; // open output file in append mode
@@ -514,6 +532,18 @@ int main(int argc, char **argv) {
       case 'I':
         Iopt = optarg; // start key for incremental
         xopt = 1; // input is hex encoded
+        break;
+      case 'P':
+        Popt = optarg; // prng generator type
+        break;
+      case 'S':
+        Sopt = strtoull(optarg, NULL, 0); // prng seed
+        break;
+      case 'F':
+        Fopt = optarg; // first element of the prng sequence
+        break;
+      case 'L':
+        Lopt = strtoull(optarg, NULL, 10); // number of prng keys
         break;
       case 'h':
         // show help
@@ -592,6 +622,33 @@ int main(int argc, char **argv) {
     if (!nopt_mod) { nopt_mod = 1; };
   }
 
+  if (Popt) {
+    if (Iopt) {
+      bail(1, "Cannot combine '-P' with '-I'\n");
+    }
+    if (topt) {
+      bail(1, "Cannot specify input type in PRNG mode\n");
+    }
+    if (prng_init(&prng, Popt, Sopt) != 0) {
+      bail(1, "Unknown PRNG type '%s' or invalid seed %ju (types: %s)\n",
+           Popt, (uintmax_t)Sopt, prng_types);
+    }
+    if (Fopt) {
+      if (strlen(Fopt) != 64) {
+        bail(1, "The first element passed to '-F' must be 64 hex digits exactly\n");
+      }
+      unhex(Fopt, 64, prng_first, sizeof(prng_first));
+    }
+    topt = "priv";
+    xopt = 1;
+    // give the processing loop somewhere to write the hex keys to
+    for (i = 0; i < BATCH_MAX; ++i) {
+      batch_line[i] = chkmalloc(65);
+    }
+    if (!nopt_mod) { nopt_mod = 1; };
+  } else if (Sopt || Fopt || Lopt) {
+    bail(1, "The '-S', '-F' and '-L' options require '-P'\n");
+  }
 
   /* handle copt */
   if (copt == NULL) { copt = "uc"; }
@@ -700,7 +757,11 @@ int main(int argc, char **argv) {
     bail(1, "The '-r' option is required for rushwallet.\n");
   }
 
-  snprintf(modestr, sizeof(modestr), xopt ? "(hex)%s" : "%s", topt);
+  if (Popt) {
+    snprintf(modestr, sizeof(modestr), "(prng)%s,seed=%ju", Popt, (uintmax_t)Sopt);
+  } else {
+    snprintf(modestr, sizeof(modestr), xopt ? "(hex)%s" : "%s", topt);
+  }
 
   if (boptn > 0) {
     if (vopt) {
@@ -782,6 +843,28 @@ int main(int argc, char **argv) {
       priv_add_uint32(priv, nopt_mod);
 
       batch_stopped = Bopt;
+    } else if (Popt) {
+      for (i = 0; i < Bopt; ++i) {
+        if (Lopt && prng_count >= Lopt) { break; }
+        if (Fopt && prng_count == 0) {
+          memcpy(batch_priv[i], prng_first, 32);
+        } else {
+          if (skipping) {
+            prng_skip256(&prng, kopt + nopt_rem);
+            skipping = 0;
+          } else {
+            prng_skip256(&prng, nopt_mod - 1);
+          }
+          prng_next256(&prng, batch_priv[i]);
+        }
+        ++prng_count;
+      }
+
+      if (i > 0) {
+        secp256k1_ec_pubkey_batch_create(i, batch_upub, batch_priv);
+      }
+
+      batch_stopped = i;
     } else {
       for (i = 0; i < Bopt; ++i) {
         if ((batch_line_read[i] = getline(&batch_line[i], &batch_line_sz[i], ifile)) > -1) {
@@ -864,7 +947,7 @@ int main(int argc, char **argv) {
             if (!fopt || hsearchf(ffile, &hash160) == 1) {
               if (tty) { fprintf(ofile, "\033[0K"); }
               // reformat/populate the line if required
-              if (Iopt) {
+              if (Iopt || Popt) {
                 hex(batch_priv[i], 32, batch_line[i], 65);
               }
               fprintresult(ofile, &hash160, pubhashfn[j].id, modestr, batch_line[i]);
@@ -876,7 +959,7 @@ int main(int argc, char **argv) {
         }
       } else { /* generate mode */
         // reformat/populate the line if required
-        if (Iopt) {
+        if (Iopt || Popt) {
           hex(batch_priv[i], 32, batch_line[i], 65);
         }
         j = 0;
