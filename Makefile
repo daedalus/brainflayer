@@ -46,6 +46,8 @@ ec_pubkey_fast.o: ec_pubkey_fast.c secp256k1/include/secp256k1.h
 	$(COMPILE) -Wno-unused-function -c $< -o $@ -I secp256k1
 
 brainflayer.o blfchk.o hex2blf.o bloom.o: bloom.h
+brainflayer.o ripemd160_256.o: ripemd160_256.h
+ripemd160_256.o: ripemd160_simd.h
 
 %.o: %.c
 	$(COMPILE) -c $< -o $@

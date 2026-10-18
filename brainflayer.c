@@ -44,6 +44,8 @@ static int brainflayer_is_init = 0;
 
 typedef struct pubhashfn_s {
    void (*fn)(hash160_t *, const unsigned char *);
+   // if set, fn is ripemd160 of what sha writes, so it can be done in batches
+   void (*sha)(unsigned char *, const unsigned char *);
    char id;
 } pubhashfn_t;
 
@@ -55,6 +57,9 @@ static bloom_t blooms[BOPT_MAX];
 // Public keys are hashed and checked against the bloom filters this many at a time.
 #define CHK_CHUNK 256
 static hash160_t chk_hash[CHK_CHUNK*8];
+static unsigned char chk_sha[CHK_CHUNK*8][32];
+static hash160_t chk_rmd[CHK_CHUNK*8];
+static int chk_rmd_idx[CHK_CHUNK*8];
 static unsigned char chk_hit[BOPT_MAX][CHK_CHUNK*8];
 
 static unsigned char *unhexed = NULL;
@@ -108,22 +113,19 @@ static inline void brainflayer_init_globals() {
 // function pointers
 static int (*input2priv)(unsigned char *, unsigned char *, size_t);
 
-/* bitcoin uncompressed address */
-static void uhash160(hash160_t *h, const unsigned char *upub) {
+/* sha256 of the uncompressed public key */
+static void usha256(unsigned char *hash, const unsigned char *upub) {
   SHA256_CTX ctx;
-  unsigned char hash[SHA256_DIGEST_LENGTH];
 
   SHA256_Init(&ctx);
   SHA256_Update(&ctx, upub, 65);
   SHA256_Final(hash, &ctx);
-  ripemd160_256(hash, h->uc);
 }
 
-/* bitcoin compressed address */
-static void chash160(hash160_t *h, const unsigned char *upub) {
+/* sha256 of the compressed public key */
+static void csha256(unsigned char *hash, const unsigned char *upub) {
   SHA256_CTX ctx;
   unsigned char cpub[33];
-  unsigned char hash[SHA256_DIGEST_LENGTH];
 
   /* quick and dirty public key compression */
   cpub[0] = 0x02 | (upub[64] & 0x01);
@@ -131,6 +133,21 @@ static void chash160(hash160_t *h, const unsigned char *upub) {
   SHA256_Init(&ctx);
   SHA256_Update(&ctx, cpub, 33);
   SHA256_Final(hash, &ctx);
+}
+
+/* bitcoin uncompressed address */
+static void uhash160(hash160_t *h, const unsigned char *upub) {
+  unsigned char hash[SHA256_DIGEST_LENGTH];
+
+  usha256(hash, upub);
+  ripemd160_256(hash, h->uc);
+}
+
+/* bitcoin compressed address */
+static void chash160(hash160_t *h, const unsigned char *upub) {
+  unsigned char hash[SHA256_DIGEST_LENGTH];
+
+  csha256(hash, upub);
   ripemd160_256(hash, h->uc);
 }
 
@@ -662,9 +679,11 @@ int main(int argc, char **argv) {
     switch (copt[i]) {
       case 'u':
         pubhashfn[i].fn = &uhash160;
+        pubhashfn[i].sha = &usha256;
         break;
       case 'c':
         pubhashfn[i].fn = &chash160;
+        pubhashfn[i].sha = &csha256;
         break;
       case 'e':
         pubhashfn[i].fn = &ehash160;
@@ -916,15 +935,23 @@ int main(int argc, char **argv) {
       // loop over the public keys a chunk at a time
       for (int c = 0; c < batch_stopped; c += CHK_CHUNK) {
         int cend = batch_stopped - c < CHK_CHUNK ? batch_stopped : c + CHK_CHUNK;
-        int n = 0;
+        int n = 0, r = 0;
 
-        // hash the chunk with each pubkey hash function, then check the hashes
-        // against each bloom filter in one go
+        // hash the chunk with each pubkey hash function, doing the ripemd160
+        // of all of them in one go, then check the hashes against each bloom
+        // filter in one go
         for (i = c; i < cend; ++i) {
-          for (j = 0; pubhashfn[j].fn != NULL; ++j) {
-            pubhashfn[j].fn(&chk_hash[n++], batch_upub[i]);
+          for (j = 0; pubhashfn[j].fn != NULL; ++j, ++n) {
+            if (pubhashfn[j].sha) {
+              pubhashfn[j].sha(chk_sha[r], batch_upub[i]);
+              chk_rmd_idx[r++] = n;
+            } else {
+              pubhashfn[j].fn(&chk_hash[n], batch_upub[i]);
+            }
           }
         }
+        ripemd160_256_n(chk_sha, chk_rmd, r);
+        while (r--) { chk_hash[chk_rmd_idx[r]] = chk_rmd[r]; }
         for (int k = 0; k < boptn; k++) {
           bloom_chk_n(&blooms[k], chk_hash[0].ul, n, chk_hit[k]);
         }
