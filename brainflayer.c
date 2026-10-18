@@ -18,6 +18,7 @@
 #include <sys/sysinfo.h>
 
 #include "ripemd160_256.h"
+#include "sha256_pub.h"
 
 #include "ec_pubkey_fast.h"
 
@@ -44,8 +45,8 @@ static int brainflayer_is_init = 0;
 
 typedef struct pubhashfn_s {
    void (*fn)(hash160_t *, const unsigned char *);
-   // if set, fn is ripemd160 of what sha writes, so it can be done in batches
-   void (*sha)(unsigned char *, const unsigned char *);
+   // if set, fn is ripemd160 of what shan writes, so it can be done in batches
+   void (*shan)(unsigned char (*)[32], const unsigned char (*)[65], size_t);
    char id;
 } pubhashfn_t;
 
@@ -113,33 +114,11 @@ static inline void brainflayer_init_globals() {
 // function pointers
 static int (*input2priv)(unsigned char *, unsigned char *, size_t);
 
-/* sha256 of the uncompressed public key */
-static void usha256(unsigned char *hash, const unsigned char *upub) {
-  SHA256_CTX ctx;
-
-  SHA256_Init(&ctx);
-  SHA256_Update(&ctx, upub, 65);
-  SHA256_Final(hash, &ctx);
-}
-
-/* sha256 of the compressed public key */
-static void csha256(unsigned char *hash, const unsigned char *upub) {
-  SHA256_CTX ctx;
-  unsigned char cpub[33];
-
-  /* quick and dirty public key compression */
-  cpub[0] = 0x02 | (upub[64] & 0x01);
-  memcpy(cpub + 1, upub + 1, 32);
-  SHA256_Init(&ctx);
-  SHA256_Update(&ctx, cpub, 33);
-  SHA256_Final(hash, &ctx);
-}
-
 /* bitcoin uncompressed address */
 static void uhash160(hash160_t *h, const unsigned char *upub) {
   unsigned char hash[SHA256_DIGEST_LENGTH];
 
-  usha256(hash, upub);
+  sha256_upub(hash, upub);
   ripemd160_256(hash, h->uc);
 }
 
@@ -147,7 +126,7 @@ static void uhash160(hash160_t *h, const unsigned char *upub) {
 static void chash160(hash160_t *h, const unsigned char *upub) {
   unsigned char hash[SHA256_DIGEST_LENGTH];
 
-  csha256(hash, upub);
+  sha256_cpub(hash, upub);
   ripemd160_256(hash, h->uc);
 }
 
@@ -451,7 +430,7 @@ int main(int argc, char **argv) {
   uint64_t ilines_last, ilines_curr, ilines_delta;
   uint64_t olines;
 
-  int skipping = 0, tty = 0;
+  int skipping = 0, tty = 0, nfn = 0;
 
   unsigned char modestr[64];
 
@@ -679,11 +658,11 @@ int main(int argc, char **argv) {
     switch (copt[i]) {
       case 'u':
         pubhashfn[i].fn = &uhash160;
-        pubhashfn[i].sha = &usha256;
+        pubhashfn[i].shan = &sha256_upub_n;
         break;
       case 'c':
         pubhashfn[i].fn = &chash160;
-        pubhashfn[i].sha = &csha256;
+        pubhashfn[i].shan = &sha256_cpub_n;
         break;
       case 'e':
         pubhashfn[i].fn = &ehash160;
@@ -700,6 +679,7 @@ int main(int argc, char **argv) {
     pubhashfn[i].id = copt[i];
     ++i;
   }
+  nfn = i;
 
   /* handle topt */
   if (topt == NULL) { topt = "sha256"; }
@@ -935,18 +915,19 @@ int main(int argc, char **argv) {
       // loop over the public keys a chunk at a time
       for (int c = 0; c < batch_stopped; c += CHK_CHUNK) {
         int cend = batch_stopped - c < CHK_CHUNK ? batch_stopped : c + CHK_CHUNK;
-        int n = 0, r = 0;
+        int n = (cend - c) * nfn, r = 0;
 
-        // hash the chunk with each pubkey hash function, doing the ripemd160
-        // of all of them in one go, then check the hashes against each bloom
-        // filter in one go
-        for (i = c; i < cend; ++i) {
-          for (j = 0; pubhashfn[j].fn != NULL; ++j, ++n) {
-            if (pubhashfn[j].sha) {
-              pubhashfn[j].sha(chk_sha[r], batch_upub[i]);
-              chk_rmd_idx[r++] = n;
-            } else {
-              pubhashfn[j].fn(&chk_hash[n], batch_upub[i]);
+        // hash the chunk with each pubkey hash function, doing the sha256 of
+        // the chunk and the ripemd160 of all of them in one go, then check
+        // the hashes against each bloom filter in one go; hash j of key i
+        // goes to chk_hash[(i-c)*nfn+j]
+        for (j = 0; j < nfn; ++j) {
+          if (pubhashfn[j].shan) {
+            pubhashfn[j].shan(chk_sha + r, (const unsigned char (*)[65])(batch_upub + c), cend - c);
+            for (i = c; i < cend; ++i) { chk_rmd_idx[r++] = (i - c) * nfn + j; }
+          } else {
+            for (i = c; i < cend; ++i) {
+              pubhashfn[j].fn(&chk_hash[(i - c) * nfn + j], batch_upub[i]);
             }
           }
         }
