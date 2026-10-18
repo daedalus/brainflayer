@@ -142,6 +142,32 @@ An incremental private key brute force mode is available for fans of
 
 `brainflayer -v -I 0000000000000000000000000000000000000000000000000000000000000001 -b example.blf`
 
+A PRNG generator mode checks keys produced by common non-cryptographic random
+number generators. Pass the generator with `-P`, its seed with `-S` and,
+optionally, the first element of the sequence with `-F`; brainflayer checks the
+first element and then generates the rest of the sequence from the seeded PRNG:
+
+`brainflayer -v -P pymt -S 2015 -F 0000000000000000000000000000000000000000000000000000000000000001 -b example.blf`
+
+Each generated key is the next 256 bits of the generator's output, least
+significant word first (Python's `getrandbits(256)`), so `-P pymt -S N`
+produces the same keys as `random.seed(N); random.getrandbits(256)`. Supported
+generators:
+
+* `mt19937`      MT19937 seeded with `init_genrand` (C, C++ `std::mt19937`,
+                 numpy `RandomState(seed)`), 32-bit seed
+* `pymt`         MT19937 seeded with `init_by_array` (Python `random.seed`,
+                 Ruby `srand`), up to 64-bit seed
+* `lcg64`        64-bit LCG, Knuth's MMIX constants, the seed is the state
+* `xorshift64`   Marsaglia xorshift64 (13, 7, 17), non-zero seed
+* `xorshift128p` xorshift128+ with its state seeded by splitmix64
+* `splitmix64`   splitmix64
+
+`-k K` skips the first K generated keys, `-n K/N` uses only the Kth of every N,
+and `-L COUNT` stops after COUNT keys (the default is to run forever). Run
+`tests/prng_test.sh` to check the generators against Python reference
+implementations.
+
 See the output of `brainflayer -h` for more detailed usage info.
 
 Also included is `blfchk` - you can pipe it hex encoded hash160 to check a
