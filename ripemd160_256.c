@@ -51,7 +51,7 @@
  */
 
 #include <stdint.h>
-
+#include <stdlib.h>
 #include <string.h>
 
 #define RIPEMD160_DIGEST_SIZE 20
@@ -283,4 +283,79 @@ void ripemd160_256(const void *in, void *out) {
   memcpy(buf + 32, pad256, 32);
   /* compute and output hash */
   ripemd160_rawcompress(buf, out);
+}
+
+/* Several inputs at once: SSE2 (4), AVX2 (8) and AVX-512F (16 lanes). */
+#if (defined(__x86_64__) || defined(__i386__)) && defined(__GNUC__) && !defined(PCT_BIG_ENDIAN)
+#define RIPEMD160_SIMD 1
+
+typedef uint32_t rmd_v4 __attribute__((vector_size(16)));
+typedef uint32_t rmd_v8 __attribute__((vector_size(32)));
+typedef uint32_t rmd_v16 __attribute__((vector_size(64)));
+
+#define RMD_V rmd_v4
+#define RMD_LANES 4
+#define RMD_NAME ripemd160_256_x4
+#define RMD_TARGET __attribute__((target("sse2")))
+#include "ripemd160_simd.h"
+#undef RMD_V
+#undef RMD_LANES
+#undef RMD_NAME
+#undef RMD_TARGET
+
+#define RMD_V rmd_v8
+#define RMD_LANES 8
+#define RMD_NAME ripemd160_256_x8
+#define RMD_TARGET __attribute__((target("avx2")))
+#include "ripemd160_simd.h"
+#undef RMD_V
+#undef RMD_LANES
+#undef RMD_NAME
+#undef RMD_TARGET
+
+#define RMD_V rmd_v16
+#define RMD_LANES 16
+#define RMD_NAME ripemd160_256_x16
+#define RMD_TARGET __attribute__((target("avx512f")))
+#include "ripemd160_simd.h"
+#undef RMD_V
+#undef RMD_LANES
+#undef RMD_NAME
+#undef RMD_TARGET
+#endif
+
+int ripemd160_256_lanes(void) {
+  static int lanes = 0;
+  const char *e;
+  int max;
+
+  if (lanes) { return lanes; }
+  max = (e = getenv("BRAINFLAYER_RIPEMD_LANES")) != NULL ? atoi(e) : 16;
+  lanes = 1;
+#ifdef RIPEMD160_SIMD
+  __builtin_cpu_init();
+  if (max >= 16 && __builtin_cpu_supports("avx512f")) {
+    lanes = 16;
+  } else if (max >= 8 && __builtin_cpu_supports("avx2")) {
+    lanes = 8;
+  } else if (max >= 4 && __builtin_cpu_supports("sse2")) {
+    lanes = 4;
+  }
+#else
+  (void)max;
+#endif
+  return lanes;
+}
+
+void ripemd160_256_n(const void *in, void *out, size_t n) {
+  const unsigned char *i = in;
+  unsigned char *o = out;
+#ifdef RIPEMD160_SIMD
+  int lanes = ripemd160_256_lanes();
+
+  for (; lanes >= 16 && n >= 16; n -= 16, i += 32*16, o += 20*16) { ripemd160_256_x16(i, o); }
+  for (; lanes >= 8 && n >= 8; n -= 8, i += 32*8, o += 20*8) { ripemd160_256_x8(i, o); }
+  for (; lanes >= 4 && n >= 4; n -= 4, i += 32*4, o += 20*4) { ripemd160_256_x4(i, o); }
+#endif
+  for (; n > 0; --n, i += 32, o += 20) { ripemd160_256(i, o); }
 }

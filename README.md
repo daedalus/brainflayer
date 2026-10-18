@@ -90,6 +90,12 @@ several hashes per instruction is used when the environment sets
 lookups into a filter bigger than the CPU caches are bound by memory latency,
 and there the scalar code with prefetching was faster on the CPUs tried.
 
+In crack mode the RIPEMD-160 step of the `u` and `c` hash160s is done 16, 8
+or 4 keys at a time with AVX-512F, AVX2 or SSE2, whichever the CPU has, which
+makes it 4-8x faster than one at a time (`-I -c uc` about 1.4x faster overall).
+`BRAINFLAYER_RIPEMD_LANES=N` caps the width, and 1 turns the vector code off.
+`tests/ripemd160_test.sh` checks every width against the scalar code.
+
 Run Brainflayer against it:
 
 `brainflayer -v -b example.blf -i phraselist.txt`
