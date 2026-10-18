@@ -45,6 +45,8 @@ algo/brainv2.o: algo/brainv2.c scrypt-jane/scrypt-jane.h
 ec_pubkey_fast.o: ec_pubkey_fast.c secp256k1/include/secp256k1.h
 	$(COMPILE) -Wno-unused-function -c $< -o $@ -I secp256k1
 
+brainflayer.o blfchk.o hex2blf.o bloom.o: bloom.h
+
 %.o: %.c
 	$(COMPILE) -c $< -o $@
 

@@ -37,10 +37,16 @@ for line in open(hexf):
         want[t >> 3] |= 1 << (t & 7)
 assert bytes(want) == data[:-16], "bits"
 EOF
-  got=$("$D/blfchk" "$T/f.blf" < "$T/in.hex" | wc -l)
-  [ "$got" -eq 200 ] && ok "blfchk finds all members" || bad "blfchk found $got/200 members"
-  got=$("$D/blfchk" "$T/f.blf" "$T/in.bin" < "$T/out.hex" | wc -l)
-  [ "$got" -eq 0 ] && ok "blfchk -f rejects non-members" || bad "blfchk matched $got non-members"
+  for simd in 0 1; do
+    export BRAINFLAYER_SIMD=$simd
+    got=$("$D/blfchk" "$T/f.blf" < "$T/in.hex" | wc -l)
+    [ "$got" -eq 200 ] && ok "blfchk finds all members (simd $simd)" || bad "blfchk found $got/200 members (simd $simd)"
+    got=$("$D/blfchk" "$T/f.blf" "$T/in.bin" < "$T/out.hex" | wc -l)
+    [ "$got" -eq 0 ] && ok "blfchk -f rejects non-members (simd $simd)" || bad "blfchk matched $got non-members (simd $simd)"
+    "$D/blfchk" "$T/f.blf" < "$T/out.hex" > "$T/fp.$simd"
+  done
+  unset BRAINFLAYER_SIMD
+  cmp -s "$T/fp.0" "$T/fp.1" && ok "scalar and simd agree on false positives" || bad "scalar and simd disagree"
 done
 
 # -k chosen from the number of hashes; -m 32 when only -k is given
@@ -60,7 +66,24 @@ cmp -s "$T/f.blf" "$T/g.blf" && ok "append keeps size and slices" || bad "append
 
 # brainflayer finds keys through a sliced filter
 "$D/hex2blf" -m 24 -k 20 "$T/in.hex" "$T/h.blf" 2>/dev/null
-got=$("$D/brainflayer" -c c -w 8 -b "$T/h.blf" -f "$T/in.bin" -P splitmix64 -S 1 -L 300 | grep -c splitmix64)
-[ "$got" -eq 200 ] && ok "brainflayer finds 200/200 keys" || bad "brainflayer found $got/200 keys"
+for simd in 0 1; do
+  got=$(BRAINFLAYER_SIMD=$simd "$D/brainflayer" -c c -w 8 -b "$T/h.blf" -f "$T/in.bin" -P splitmix64 -S 1 -L 300 | grep -c splitmix64)
+  [ "$got" -eq 200 ] && ok "brainflayer finds 200/200 keys (simd $simd)" || bad "brainflayer found $got/200 keys (simd $simd)"
+done
+# keys spread over chunks and hash types, against two filters
+"$D/brainflayer" -c uc -w 8 -P splitmix64 -S 3 -L 1000 > "$T/uc.txt"
+grep ':u:' "$T/uc.txt" | sed -n '1~7p' | cut -d: -f1 > "$T/u.hex"
+grep ':c:' "$T/uc.txt" | sed -n '3~11p' | cut -d: -f1 > "$T/c.hex"
+"$D/hex2blf" -m 22 -k 10 "$T/u.hex" "$T/u.blf" 2>/dev/null
+"$D/hex2blf" -m 23 -k 14 "$T/c.hex" "$T/c.blf" 2>/dev/null
+cat "$T/u.hex" "$T/c.hex" | python3 -c "import sys;sys.stdout.buffer.write(b''.join(sorted(bytes.fromhex(l) for l in sys.stdin)))" > "$T/uc.bin"
+want=$(cat "$T/u.hex" "$T/c.hex" | wc -l)
+for simd in 0 1; do
+  BRAINFLAYER_SIMD=$simd "$D/brainflayer" -c uc -w 8 -b "$T/u.blf" -b "$T/c.blf" -f "$T/uc.bin" \
+    -P splitmix64 -S 3 -L 1000 | grep splitmix64 | cut -d: -f1 > "$T/got.$simd"
+  cat "$T/u.hex" "$T/c.hex" | sort > "$T/want"
+  sort "$T/got.$simd" | cmp -s - "$T/want" && ok "brainflayer finds $want keys in two filters (simd $simd)" \
+    || bad "brainflayer found $(wc -l < "$T/got.$simd")/$want keys in two filters (simd $simd)"
+done
 
 exit $fail

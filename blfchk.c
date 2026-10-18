@@ -22,11 +22,16 @@
 #include "hash160.h"
 #include "hsearchf.h"
 
+/* lines are checked against the filter this many at a time */
+#define CHK_BATCH 256
+
 int main(int argc, char **argv) {
   int ret;
-  hash160_t hash;
-  char *line = NULL;
-  size_t line_sz = 0;
+  hash160_t hash[CHK_BATCH];
+  unsigned char hit[CHK_BATCH];
+  char *line[CHK_BATCH] = { NULL };
+  size_t line_sz[CHK_BATCH] = { 0 };
+  size_t i, n;
   unsigned char *bloomfile, *hashfile;
   bloom_t bloom;
   FILE *ifile = stdin, *ofile = stdout, *hfile = NULL;
@@ -52,18 +57,24 @@ int main(int argc, char **argv) {
     hfile = fopen(hashfile, "r");
   }
 
-  while (getline(&line, &line_sz, ifile) > 0) {
-    unhex(line, strlen(line), hash.uc, sizeof(hash.uc));
-
-    if (!bloom_chk(&bloom, hash.ul)) { continue; }
-
-    if (hfile && hsearchf(hfile, &hash) != 1) {
-      //fprintf(ofile, "%s (false positive)\n", hex(hash.uc, sizeof(hash.uc), buf, sizeof(buf)));
-      continue;
+  do {
+    for (n = 0; n < CHK_BATCH && getline(&line[n], &line_sz[n], ifile) > 0; ++n) {
+      memset(hash[n].uc, 0, sizeof(hash[n].uc));
+      unhex(line[n], strlen(line[n]), hash[n].uc, sizeof(hash[n].uc));
     }
-    //fprintf(ofile, "%s\n", hex(hash.uc, sizeof(hash.uc), buf, sizeof(buf)));
-    fprintf(ofile, "%s", line);
-  }
+    bloom_chk_n(&bloom, hash[0].ul, n, hit);
+
+    for (i = 0; i < n; ++i) {
+      if (!hit[i]) { continue; }
+
+      if (hfile && hsearchf(hfile, &hash[i]) != 1) {
+        //fprintf(ofile, "%s (false positive)\n", hex(hash[i].uc, sizeof(hash[i].uc), buf, sizeof(buf)));
+        continue;
+      }
+      //fprintf(ofile, "%s\n", hex(hash[i].uc, sizeof(hash[i].uc), buf, sizeof(buf)));
+      fprintf(ofile, "%s", line[i]);
+    }
+  } while (n == CHK_BATCH);
 
   return 0;
 }

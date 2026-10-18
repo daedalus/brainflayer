@@ -83,6 +83,13 @@ slices, so `brainflayer -b`, `blfchk` and adding more hashes with `hex2blf`
 pick them up without extra options. Legacy filters keep working unchanged.
 `tests/bloom_test.sh` checks the slicing against a Python reference.
 
+`brainflayer` and `blfchk` check hashes in batches, prefetching bits a few
+hashes ahead so the cache misses overlap. On x86 an AVX2 version that checks
+several hashes per instruction is used when the environment sets
+`BRAINFLAYER_SIMD=1` and the CPU supports it. It is off by default because
+lookups into a filter bigger than the CPU caches are bound by memory latency,
+and there the scalar code with prefetching was faster on the CPUs tried.
+
 Run Brainflayer against it:
 
 `brainflayer -v -b example.blf -i phraselist.txt`

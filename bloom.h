@@ -94,6 +94,15 @@ static unsigned int bloom_chk_hash160(unsigned char *bloom, uint32_t *h) {
 #define BLOOM_LOG2_MAX 40
 #define BLOOM_SLICES_MAX 160
 
+/* On x86 bloom_chk_n can use AVX2, but only when the environment sets
+ * BRAINFLAYER_SIMD (and not to 0) and the CPU has it: lookups into a filter
+ * bigger than the caches are bound by memory latency, and on the CPUs tried
+ * the gathers were slower than the scalar code with prefetching, which is
+ * the default and the fallback. */
+#if defined(__x86_64__) || defined(__i386__)
+#define BLOOM_SIMD 1
+#endif
+
 typedef struct {
   unsigned char *bits;
   int legacy;
@@ -103,6 +112,7 @@ typedef struct {
   uint8_t word[BLOOM_SLICES_MAX];
   int8_t shift[BLOOM_SLICES_MAX];
   uint8_t lshift[BLOOM_SLICES_MAX];
+  int simd;            /* bloom_chk_n uses AVX2 */
 } bloom_t;
 
 /* set up legacy (log2bits == 0) or sliced parameters, returns 0 if valid */
@@ -140,6 +150,13 @@ static inline unsigned int bloom_chk(const bloom_t *b, const uint32_t *h) {
   }
   return 1;
 }
+
+/* Check n hashes, stored back to back (an array of hash160_t), setting hit[i]
+ * to bloom_chk of hash i. The scalar version prefetches the first two bits of
+ * the hash a few places ahead, so the cache misses of several hashes overlap.
+ * The AVX2 version puts one hash in each lane and checks a slice of all of
+ * them at once, only fetching bits for the lanes still in the running. */
+void bloom_chk_n(const bloom_t *, const uint32_t *h, size_t n, unsigned char *hit);
 
 //#define bloom_new() malloc(536870912)
 //unsigned char * bloom_load(unsigned char *);
